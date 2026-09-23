@@ -76,3 +76,87 @@ def brute_solve(n, arcs):
         "classification": classification,
         "usage": usage,
     }
+
+
+def brute_band(n, arcs, tolerance):
+    """暴力容差带参考：枚举全部非交叉匹配，只保留最大配对数且残差 <= R+t 的方案。"""
+
+    by_left = [[] for _ in range(n)]
+    for cid, a, b, r in arcs:
+        by_left[a].append((b, r, cid))
+
+    sols = [[[] for _ in range(n + 1)] for _ in range(n + 1)]
+    for i in range(n + 1):
+        sols[i][i] = [frozenset()]
+    for length in range(1, n + 1):
+        for i in range(0, n - length + 1):
+            j = i + length
+            out = set(sols[i + 1][j])
+            for b, _r, cid in by_left[i]:
+                if b >= j:
+                    continue
+                for inner in sols[i + 1][b]:
+                    for outer in sols[b + 1][j]:
+                        out.add(frozenset({cid}) | inner | outer)
+            sols[i][j] = list(out)
+
+    cost = {cid: r for cid, _a, _b, r in arcs}
+    left_of = {cid: a for cid, a, _b, _r in arcs}
+    endpoint_of = {cid: (a, b) for cid, a, b, _r in arcs}
+
+    scored = [(m, len(m), sum(cost[c] for c in m)) for m in sols[0][n]]
+    max_pairs = max(p for _m, p, _c in scored)
+    min_cost = min(c for _m, p, c in scored if p == max_pairs)
+    band = [
+        (m, c)
+        for m, p, c in scored
+        if p == max_pairs and c <= min_cost + tolerance
+    ]
+
+    counts: dict[int, int] = {}
+    for _m, c in band:
+        e = c - min_cost
+        counts[e] = counts.get(e, 0) + 1
+
+    def id_sequence(matching):
+        return sorted(matching, key=lambda c: (left_of[c], c))
+
+    canonical_m, canonical_cost = min(
+        band, key=lambda mc: (id_sequence(mc[0]), mc[1])
+    )
+    canonical = id_sequence(canonical_m)
+
+    total = len(band)
+    usage = {cid: 0 for cid, _a, _b, _r in arcs}
+    for matching, _c in band:
+        for cid in matching:
+            usage[cid] += 1
+
+    classification = {"required": [], "optional": [], "never": []}
+    for cid, _a, _b, _r in arcs:
+        used = usage[cid]
+        if used == 0:
+            classification["never"].append(cid)
+        elif used == total:
+            classification["required"].append(cid)
+        else:
+            classification["optional"].append(cid)
+    classification = {k: sorted(v) for k, v in classification.items()}
+
+    unmatched = set(range(n))
+    for cid in canonical:
+        a, b = endpoint_of[cid]
+        unmatched.discard(a)
+        unmatched.discard(b)
+
+    return {
+        "total": total,
+        "max_pairs": max_pairs,
+        "min_cost": min_cost,
+        "counts": counts,
+        "canonical": canonical,
+        "canonical_cost": canonical_cost,
+        "canonical_unmatched": sorted(unmatched),
+        "classification": classification,
+        "usage": usage,
+    }
