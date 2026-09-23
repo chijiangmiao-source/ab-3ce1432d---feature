@@ -76,3 +76,85 @@ def brute_solve(n, arcs):
         "classification": classification,
         "usage": usage,
     }
+
+
+def brute_band(n, arcs, tol):
+    """容差带暴力参考：在最大配对数下纳入残差 R..R+tol 的全部方案。"""
+    by_left = [[] for _ in range(n)]
+    for cid, a, b, r in arcs:
+        by_left[a].append((b, r, cid))
+
+    sols = [[[] for _ in range(n + 1)] for _ in range(n + 1)]
+    for i in range(n + 1):
+        sols[i][i] = [frozenset()]
+
+    for length in range(1, n + 1):
+        for i in range(0, n - length + 1):
+            j = i + length
+            out = set(sols[i + 1][j])
+            for b, _r, cid in by_left[i]:
+                if b >= j:
+                    continue
+                for inner in sols[i + 1][b]:
+                    for outer in sols[b + 1][j]:
+                        out.add(frozenset({cid}) | inner | outer)
+            sols[i][j] = list(out)
+
+    cost = {cid: r for cid, _a, _b, r in arcs}
+    left_of = {cid: a for cid, a, _b, _r in arcs}
+    scored = []
+    for matching in sols[0][n]:
+        scored.append((matching, len(matching), sum(cost[c] for c in matching)))
+
+    max_pairs = max(p for _m, p, _c in scored)
+    min_cost = min(c for _m, p, c in scored if p == max_pairs)
+    band = [
+        (m, c)
+        for m, p, c in scored
+        if p == max_pairs and min_cost <= c <= min_cost + tol
+    ]
+
+    bands = {d: 0 for d in range(tol + 1)}
+    usage = {cid: 0 for cid, _a, _b, _r in arcs}
+    for matching, c in band:
+        bands[c - min_cost] += 1
+        for cid in matching:
+            usage[cid] += 1
+
+    def id_sequence(matching):
+        return tuple(sorted(matching, key=lambda c: (left_of[c], c)))
+
+    canonical_m, canonical_c = min(band, key=lambda mc: id_sequence(mc[0]))
+    canonical = list(id_sequence(canonical_m))
+
+    total_count = len(band)
+    classification = {"required": [], "optional": [], "never": []}
+    for cid, _a, _b, _r in arcs:
+        used = usage[cid]
+        if used == 0:
+            classification["never"].append(cid)
+        elif used == total_count:
+            classification["required"].append(cid)
+        else:
+            classification["optional"].append(cid)
+    classification = {k: sorted(v) for k, v in classification.items()}
+
+    endpoint_of = {cid: (a, b) for cid, a, b, _r in arcs}
+    unmatched = set(range(n))
+    for cid in canonical:
+        a, b = endpoint_of[cid]
+        unmatched.discard(a)
+        unmatched.discard(b)
+
+    return {
+        "max_pairs": max_pairs,
+        "min_cost": min_cost,
+        "bands": bands,
+        "band_count": total_count,
+        "canonical": canonical,
+        "canonical_residual": canonical_c,
+        "canonical_unmatched": sorted(unmatched),
+        "classification": classification,
+        "usage": usage,
+    }
+

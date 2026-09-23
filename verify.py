@@ -3,7 +3,8 @@
 依次执行：
 1. 代码测试（pytest 单元测试，含随机暴力交叉验证）；
 2. 构建检查（语法编译、模块导入、镜像内关键文件齐备）；
-3. API/HTTP 冒烟（健康路径 + 嵌套同优、交叉低价诱饵、空候选、非法引用四类场景）。
+3. API/HTTP 冒烟（健康路径 + 嵌套同优、交叉低价诱饵、空候选、非法引用四类场景，
+   以及 /audit-band 的高残差替代归属变化、超大分层计数、零容差回归、非法容差）。
 
 任一步失败即以非零退出码结束，全部通过退出码 0。
 """
@@ -213,10 +214,122 @@ def run_smoke() -> None:
     check(status == 404, "未知路径返回 404", f"HTTP {status}")
 
 
+def run_audit_band_smoke() -> None:
+    section("API/HTTP 容差带冒烟 (/audit-band)")
+
+    # 场景 1：高残差替代使归属变化 —— 零容差必选的并列对在 tol=5 入带后全变可选。
+    payload = {
+        "hits": hits(4),
+        "candidates": [
+            cand("low", 0, 1, 0),
+            cand("rest", 2, 3, 0),
+            cand("z_alt", 0, 3, 5),
+            cand("alt_rest", 1, 2, 0),
+        ],
+        "tolerance": 5,
+    }
+    status, body = http_request("POST", "/audit-band", payload)
+    counts = {row["excess"]: row["count"] for row in body.get("residual_bands", [])}
+    ok = (
+        status == 200
+        and body.get("minimum_residual") == 0
+        and body.get("band_residual_limit") == 5
+        and counts.get(0) == "1"
+        and counts.get(5) == "1"
+        and body.get("band_count") == "2"
+        and body.get("classification", {}).get("required") == []
+        and set(body.get("classification", {}).get("optional", []))
+        == {"low", "rest", "z_alt", "alt_rest"}
+        and [p["id"] for p in body.get("canonical_pairs", [])] == ["low", "rest"]
+        and body.get("canonical_residual") == 0
+    )
+    check(ok, "高残差替代入带后必选转可选", f"HTTP {status} {body}")
+
+    # 场景 2：超大分层计数 —— 30 个独立低/高（r=0/1）二选一块，tol=40 容纳全部。
+    n_blocks = 30
+    band_cands = []
+    for block in range(n_blocks):
+        x = 3 * block
+        band_cands.append(cand(f"lo{block}", x, x + 1, 0))
+        band_cands.append(cand(f"hi{block}", x, x + 2, 1))
+    payload = {
+        "hits": hits(3 * n_blocks),
+        "candidates": band_cands,
+        "tolerance": 40,
+    }
+    status, body = http_request("POST", "/audit-band", payload)
+    from math import comb
+
+    rows = body.get("residual_bands", [])
+    ok = (
+        status == 200
+        and body.get("band_count") == str(2**30)
+        and len(rows) == 41
+        and all(row["count"] == str(comb(30, row["excess"])) for row in rows)
+        and body.get("classification", {}).get("required") == []
+        and len(body.get("classification", {}).get("optional", [])) == 60
+    )
+    check(ok, "超大分层计数按超额精确分组（任意精度）", f"HTTP {status} {body}")
+
+    # 场景 3：零容差回归 —— /audit-band tolerance=0 与 /audit 完全一致。
+    payload = {
+        "hits": hits(6),
+        "candidates": [
+            cand("bait", 0, 3, 0),
+            cand("inner", 1, 2, 10),
+            cand("tail", 4, 5, 1),
+            cand("seq01", 0, 1, 1),
+            cand("seq23", 2, 3, 1),
+        ],
+    }
+    s_a, audit_body = http_request("POST", "/audit", payload)
+    s_b, band_body = http_request("POST", "/audit-band", {**payload, "tolerance": 0})
+    ok = (
+        (s_a, s_b) == (200, 200)
+        and band_body["band_count"] == audit_body["optimal_count"]
+        and band_body["minimum_residual"] == audit_body["total_residual"]
+        and band_body["canonical_pairs"] == audit_body["canonical_pairs"]
+        and band_body["canonical_residual"] == audit_body["total_residual"]
+        and band_body["unmatched_hits"] == audit_body["unmatched_hits"]
+        and band_body["classification"] == audit_body["classification"]
+        and band_body["residual_bands"] == [
+            {
+                "excess": 0,
+                "residual": audit_body["total_residual"],
+                "count": audit_body["optimal_count"],
+            }
+        ]
+    )
+    check(ok, "零容差 /audit-band 与 /audit 完全一致", f"HTTP {s_a}/{s_b}")
+
+    # 场景 4：非法容差 —— 字段路径错误且不夹带任何结果。
+    for bad in (41, -1, "5", 1.5, True):
+        bad_payload = {"hits": hits(4), "candidates": [], "tolerance": bad}
+        status, body = http_request("POST", "/audit-band", bad_payload)
+        ok = (
+            status == 400
+            and set(body.keys()) == {"errors"}
+            and any(e.get("field") == "/tolerance" for e in body["errors"])
+        )
+        check(ok, f"非法容差被拒绝: {bad!r}", f"HTTP {status} {body}")
+
+    # 缺少 tolerance。
+    status, body = http_request(
+        "POST", "/audit-band", {"hits": hits(4), "candidates": []}
+    )
+    check(
+        status == 400
+        and any(e.get("field") == "/tolerance" for e in body["errors"])
+        and set(body.keys()) == {"errors"},
+        "缺少 tolerance 被拒绝", f"HTTP {status} {body}",
+    )
+
+
 def main() -> int:
     run_unit_tests()
     run_build_checks()
     run_smoke()
+    run_audit_band_smoke()
 
     print("\n=== 汇总 ===")
     if failures:
