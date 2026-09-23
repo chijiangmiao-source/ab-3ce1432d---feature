@@ -1,0 +1,37 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: track-pair-audit:latest
+    environment:
+      PORT: "8080"
+    ports:
+      # 宿主机端口可通过环境变量 HOST_PORT 配置，默认 8080。
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3).read()"
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  # 单次复核服务：代码测试 + 构建检查 + API/HTTP 冒烟，退出码表示成败。
+  verify:
+    image: track-pair-audit:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: "http://api:8080"
+      # 构建检查：确认镜像内关键文件齐备（运行时零第三方依赖）。
+      REQUIRE_BUILD_FILES: "solver.py,app.py,verify.py,requirements.txt"
+    entrypoint: ["python", "verify.py"]
+    restart: "no"
